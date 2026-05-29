@@ -26,17 +26,24 @@ function bg(message) {
   });
 }
 
-function parseHashTokens() {
+function parseHashAuth() {
   const hash = window.location.hash.replace(/^#/, '');
-  if (!hash) return null;
+  if (!hash) return { error: null, tokens: null };
   const params = new URLSearchParams(hash);
+  const authError =
+    params.get('error_description') ||
+    (params.get('error') ? `Sign-in failed (${params.get('error')})` : null);
+  if (authError) return { error: authError, tokens: null };
   const access = params.get('access_token');
   const refresh = params.get('refresh_token');
-  if (!access) return null;
+  if (!access) return { error: null, tokens: null };
   return {
-    access_token: access,
-    refresh_token: refresh,
-    expires_in: parseInt(params.get('expires_in') || '3600', 10),
+    error: null,
+    tokens: {
+      access_token: access,
+      refresh_token: refresh,
+      expires_in: parseInt(params.get('expires_in') || '3600', 10),
+    },
   };
 }
 
@@ -57,15 +64,28 @@ async function checkExtensionConfig() {
 }
 
 async function tryRestoreSession() {
-  const tokens = parseHashTokens();
+  const { error: hashError, tokens } = parseHashAuth();
+  if (hashError) {
+    history.replaceState(null, '', 'popup.html');
+    showScreen('auth');
+    await checkExtensionConfig();
+    showAuthError(hashError);
+    return false;
+  }
   if (tokens) {
-    await bg({
+    const setRes = await bg({
       type: 'SET_SESSION_TOKENS',
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       expires_in: tokens.expires_in,
     });
     history.replaceState(null, '', 'popup.html');
+    if (!setRes.ok) {
+      showScreen('auth');
+      showAuthError(setRes.error || 'Could not save session');
+      return false;
+    }
+    showToast('Signed in');
   }
 
   const params = new URLSearchParams(window.location.search);

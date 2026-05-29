@@ -32,9 +32,8 @@
   let pins = [];
   let pinRecords = [];
   let pinContainer = null;
-  let toggleBtn = null;
-  let dashboardBtn = null;
-  let allFeedbackPanel = null;
+  let launcherBtn = null;
+  let mainPanel = null;
   let popover = null;
   let tooltip = null;
   let drawLayer = null;
@@ -45,9 +44,10 @@
   let activeReplayData = null;
   let sessionUser = null;
   let activePrototype = null;
-  let slidePanel = null;
   let panelOpen = false;
   let panelFilter = '';
+  let activePanelTab = 'capture';
+  let configReady = false;
 
   function bg(message) {
     return new Promise((resolve) => {
@@ -135,17 +135,19 @@
 
   async function loadState(callback) {
     const configRes = await bg({ type: 'GET_CONFIG' });
+    configReady = false;
     if (configRes.ok && configRes.data) {
       supabaseUrl = (configRes.data.url || '').replace(/\/$/, '');
       supabaseAnonKey = configRes.data.anonKey || '';
       dashboardUrl = configRes.data.dashboardUrl || DEFAULT_DASHBOARD_URL;
+      configReady = Boolean(configRes.data.configured);
     }
     const sessionRes = await bg({ type: 'GET_SESSION' });
     sessionUser = sessionRes.ok ? sessionRes.data?.session?.user : null;
     const protoRes = await bg({ type: 'FIND_PROTOTYPE_FOR_PAGE', pageUrl: getPageUrl() });
     activePrototype = protoRes.ok ? protoRes.data : null;
     ownerMode = activePrototype ? activePrototype.show_team_feedback !== false : false;
-    if (dashboardBtn) dashboardBtn.href = dashboardUrl;
+    updatePanelChrome();
     callback();
   }
 
@@ -229,10 +231,6 @@
     if (tooltip) {
       tooltip.remove();
       tooltip = null;
-    }
-    if (allFeedbackPanel) {
-      allFeedbackPanel.remove();
-      allFeedbackPanel = null;
     }
   }
 
@@ -321,74 +319,15 @@
     setTimeout(clearTargetHighlight, 3000);
   }
 
-  function renderAllFeedbackPanel(items, onPageIds) {
-    if (!ownerMode || items.length === 0) return;
-
-    if (allFeedbackPanel) allFeedbackPanel.remove();
-    allFeedbackPanel = document.createElement('div');
-    allFeedbackPanel.className = 'pnpt-all-feedback-panel';
-
-    const header = document.createElement('div');
-    header.className = 'pnpt-all-feedback-header';
-    header.textContent = `All feedback (${items.length})`;
-    allFeedbackPanel.appendChild(header);
-
-    const list = document.createElement('ul');
-    list.className = 'pnpt-all-feedback-list';
-
-    items.forEach((item, i) => {
-      const onPage = onPageIds.has(item.id);
-      const li = document.createElement('li');
-      li.className = `pnpt-all-feedback-item category-${item.category}${onPage ? ' on-page' : ' off-page'}`;
-
-      const num = document.createElement('span');
-      num.className = 'pnpt-all-feedback-num';
-      num.textContent = String(i + 1);
-
-      const body = document.createElement('div');
-      body.className = 'pnpt-all-feedback-body';
-      body.innerHTML = `<strong>${escapeHtml(item.user_name)}</strong> · ${escapeHtml(item.category)}<br>${escapeHtml(item.comment.slice(0, 80))}${item.comment.length > 80 ? '…' : ''}`;
-
-      const pageLink = document.createElement('a');
-      pageLink.className = 'pnpt-all-feedback-page';
-      pageLink.href = item.page_url;
-      pageLink.target = '_blank';
-      pageLink.rel = 'noopener noreferrer';
-      pageLink.textContent = formatPageLabel(item.page_url);
-      pageLink.addEventListener('click', (e) => e.stopPropagation());
-
-      li.appendChild(num);
-      li.appendChild(body);
-      li.appendChild(pageLink);
-
-      li.addEventListener('click', () => {
-        if (onPage) {
-          scrollToAndHighlight(item);
-        } else {
-          window.open(item.page_url, '_blank', 'noopener');
-        }
-      });
-
-      list.appendChild(li);
-    });
-
-    allFeedbackPanel.appendChild(list);
-    document.body.appendChild(allFeedbackPanel);
-  }
-
   function renderPins(items) {
     clearPins();
     ensurePinContainer();
 
     const onPage = [];
-    const onPageIds = new Set();
 
     items.forEach((item) => {
       const el = resolveElement(item.element_selector);
-      if (el) {
-        onPage.push({ item, el });
-        if (item.id) onPageIds.add(item.id);
-      }
+      if (el) onPage.push({ item, el });
     });
 
     onPage.forEach(({ item, el }, index) => {
@@ -399,9 +338,6 @@
       pins.push({ el: pin, target: el, item });
     });
 
-    if (ownerMode) {
-      renderAllFeedbackPanel(items, onPageIds);
-    }
   }
 
   async function fetchPins() {
@@ -428,23 +364,34 @@
 
     try {
       const res = await bg({ type: 'REST', path });
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.warn('[Pinpoint] Failed to load pins:', res.error);
+        if (panelOpen) {
+          const list = mainPanel?.querySelector('.pnpt-panel-list');
+          if (list) {
+            list.innerHTML = `<li class="pnpt-panel-empty pnpt-panel-error">${escapeHtml(res.error || 'Could not load feedback')}</li>`;
+          }
+        }
+        return;
+      }
       const items = res.data || [];
       pinRecords = items;
       renderPins(items);
-      if (panelOpen && slidePanel) renderPanelList(items);
+      if (panelOpen && mainPanel) renderFeedbackTabList(items);
     } catch (e) {
       console.warn('[Pinpoint] Failed to load pins', e);
+      if (panelOpen) showToast(e.message || 'Could not load feedback');
     }
   }
 
   function setFeedbackMode(on) {
     feedbackMode = on;
     document.body.style.cursor = on ? 'crosshair' : '';
-    if (toggleBtn) {
-      toggleBtn.classList.toggle('active', on);
-      toggleBtn.textContent = on ? 'ON' : 'Pinpoint';
+    if (launcherBtn) {
+      launcherBtn.classList.toggle('pnpt-launcher-capture', on);
+      launcherBtn.title = on ? 'Capture mode on — click an element' : 'Open Pinpoint';
     }
+    updateCaptureTab();
     if (!on && hoveredEl) {
       hoveredEl.classList.remove('pnpt-hover-highlight');
       hoveredEl = null;
@@ -481,12 +428,13 @@
     popover.style.top = `${top}px`;
   }
 
-  function captureScreenshot() {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: 'CAPTURE_SCREENSHOT' }, (response) => {
-        resolve(response && response.dataUrl ? response.dataUrl : null);
-      });
-    });
+  async function captureScreenshot() {
+    const res = await bg({ type: 'CAPTURE_SCREENSHOT' });
+    if (!res.ok) {
+      console.warn('[Pinpoint] Screenshot failed:', res.error);
+      return null;
+    }
+    return res.data?.dataUrl || null;
   }
 
   async function uploadScreenshot(dataUrl) {
@@ -1002,17 +950,14 @@
 
   function isPnptUiElement(target) {
     return !!(
-      target.closest('.pnpt-toggle-btn') ||
-      target.closest('.pnpt-dashboard-btn') ||
+      target.closest('.pnpt-launcher') ||
+      target.closest('.pnpt-main-panel') ||
       target.closest('.pnpt-popover') ||
       target.closest('.pnpt-pin') ||
       target.closest('.pnpt-toast') ||
-      target.closest('.pnpt-all-feedback-panel') ||
       target.closest('.pnpt-draw-layer') ||
       target.closest('.pnpt-draw-toolbar') ||
-      target.closest('.pnpt-replay-layer') ||
-      target.closest('.pnpt-slide-panel') ||
-      target.closest('.pnpt-toolbar')
+      target.closest('.pnpt-replay-layer')
     );
   }
 
@@ -1117,10 +1062,18 @@
       submitBtn.textContent = 'Saving...';
 
       try {
+        if (!configReady) {
+          showToast('Extension not configured — add config.js and reload');
+          return;
+        }
         const hasStrokes = annotationData.strokes && annotationData.strokes.length > 0;
         const uploadDataUrl = hasStrokes
           ? screenshotDataUrl
           : await compositeScreenshot(screenshotDataUrl, annotationData);
+        if (!uploadDataUrl) {
+          showToast('Could not prepare screenshot');
+          return;
+        }
         const screenshotUrl = await uploadScreenshot(uploadDataUrl);
         await submitFeedback({
           prototype_id: activePrototype?.prototype_slug || protoId,
@@ -1141,9 +1094,10 @@
         setFeedbackMode(false);
         showToast('Feedback saved');
         await fetchPins();
+        if (panelOpen) setPanelTab('feedback');
       } catch (e) {
         console.error('[Pinpoint]', e);
-        showToast('Failed to save feedback');
+        showToast(e.message || 'Failed to save feedback');
         submitBtn.disabled = false;
         submitBtn.textContent = 'Submit';
       }
@@ -1211,18 +1165,89 @@
     startFeedbackFlow(target, e.clientX, e.clientY);
   }
 
-  function renderPanelList(items) {
-    const list = slidePanel?.querySelector('.pnpt-panel-list');
+  function getPanelStatusMessage() {
+    if (!configReady) {
+      return 'Extension is not configured. Copy config.example.js to config.js, add Supabase keys, and reload the extension.';
+    }
+    if (!sessionUser) {
+      return 'Sign in from the Pinpoint extension popup (toolbar icon), then reload this page.';
+    }
+    if (!activePrototype) {
+      return 'No prototype registered for this URL. Add this site in the extension popup under your prototypes.';
+    }
+    return null;
+  }
+
+  function updatePanelChrome() {
+    if (!mainPanel) return;
+    const statusEl = mainPanel.querySelector('.pnpt-panel-status');
+    const statusMsg = getPanelStatusMessage();
+    if (statusEl) {
+      statusEl.textContent = statusMsg || '';
+      statusEl.hidden = !statusMsg;
+      statusEl.classList.toggle('pnpt-panel-status-error', Boolean(statusMsg));
+    }
+    const dashLink = mainPanel.querySelector('.pnpt-dashboard-link');
+    if (dashLink) {
+      dashLink.href = dashboardUrl;
+      dashLink.hidden = !sessionUser;
+    }
+    const protoLabel = mainPanel.querySelector('.pnpt-proto-label');
+    if (protoLabel) {
+      protoLabel.textContent = activePrototype
+        ? activePrototype.name || activePrototype.url_pattern
+        : '';
+      protoLabel.hidden = !activePrototype;
+    }
+    updateCaptureTab();
+  }
+
+  function updateCaptureTab() {
+    if (!mainPanel) return;
+    const captureBtn = mainPanel.querySelector('.pnpt-capture-start-btn');
+    const hint = mainPanel.querySelector('.pnpt-capture-hint');
+    const blocked = Boolean(getPanelStatusMessage());
+    if (captureBtn) {
+      captureBtn.disabled = blocked;
+      captureBtn.textContent = feedbackMode ? 'Cancel capture' : 'Start capture';
+      captureBtn.classList.toggle('active', feedbackMode);
+    }
+    if (hint) {
+      hint.textContent = feedbackMode
+        ? 'Click any element on the page, draw your annotation, then submit.'
+        : 'Turn on capture, click an element, draw on the page, and submit feedback.';
+    }
+  }
+
+  function setPanelTab(tab) {
+    activePanelTab = tab;
+    if (!mainPanel) return;
+    mainPanel.querySelectorAll('.pnpt-tab').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    mainPanel.querySelectorAll('.pnpt-tab-panel').forEach((panel) => {
+      panel.hidden = panel.dataset.tabPanel !== tab;
+    });
+    if (tab === 'feedback') renderFeedbackTabList(pinRecords);
+  }
+
+  function renderFeedbackTabList(items) {
+    const list = mainPanel?.querySelector('.pnpt-panel-list');
     if (!list) return;
     const q = panelFilter.trim().toLowerCase();
     const filtered = q
       ? items.filter(
           (i) =>
             (i.comment || '').toLowerCase().includes(q) ||
-            (i.user_name || '').toLowerCase().includes(q)
+            (i.user_name || '').toLowerCase().includes(q) ||
+            (i.category || '').toLowerCase().includes(q)
         )
       : items;
     list.innerHTML = '';
+    if (!sessionUser) {
+      list.innerHTML = '<li class="pnpt-panel-empty">Sign in to view feedback</li>';
+      return;
+    }
     if (!filtered.length) {
       list.innerHTML = '<li class="pnpt-panel-empty">No feedback yet</li>';
       return;
@@ -1231,15 +1256,20 @@
       const li = document.createElement('li');
       li.className = `pnpt-panel-item category-${item.category}`;
       const votes = item.vote_count || 0;
+      const pageHint = item.page_url
+        ? `<span class="pnpt-panel-page">${escapeHtml(formatPageLabel(item.page_url))}</span>`
+        : '';
       const upvoteBtn =
         activePrototype?.allow_upvotes !== false
           ? `<button type="button" class="pnpt-upvote-btn" data-id="${item.id}">▲ ${votes}</button>`
           : '';
       li.innerHTML = `<div class="pnpt-panel-item-head"><strong>#${idx + 1}</strong> · ${escapeHtml(item.user_name)} · ${escapeHtml(item.category)}</div>
-        <p>${escapeHtml(item.comment)}</p>${upvoteBtn}`;
+        <p>${escapeHtml(item.comment)}</p>${pageHint}${upvoteBtn}`;
       li.addEventListener('click', (e) => {
         if (e.target.closest('.pnpt-upvote-btn')) return;
-        scrollToAndHighlight(item);
+        const onPage = item.page_url === getPageUrl();
+        if (onPage) scrollToAndHighlight(item);
+        else window.open(item.page_url, '_blank', 'noopener');
       });
       const voteBtn = li.querySelector('.pnpt-upvote-btn');
       if (voteBtn) {
@@ -1252,78 +1282,84 @@
     });
   }
 
-  function toggleSlidePanel(open) {
+  function toggleMainPanel(open) {
     panelOpen = open !== undefined ? open : !panelOpen;
-    if (slidePanel) slidePanel.classList.toggle('pnpt-slide-panel-open', panelOpen);
-    if (panelOpen) fetchPins();
+    if (mainPanel) mainPanel.classList.toggle('pnpt-main-panel-open', panelOpen);
+    if (launcherBtn) launcherBtn.classList.toggle('pnpt-launcher-open', panelOpen);
+    if (panelOpen) {
+      setPanelTab(activePanelTab);
+      fetchPins();
+      updatePanelChrome();
+    } else if (feedbackMode) {
+      setFeedbackMode(false);
+    }
   }
 
-  function createSlidePanel() {
-    slidePanel = document.createElement('aside');
-    slidePanel.className = 'pnpt-slide-panel';
-    slidePanel.innerHTML = `
-      <div class="pnpt-slide-panel-header">
-        <strong>Feedback</strong>
+  function createPinpointUi() {
+    launcherBtn = document.createElement('button');
+    launcherBtn.type = 'button';
+    launcherBtn.className = 'pnpt-launcher';
+    launcherBtn.title = 'Open Pinpoint';
+    launcherBtn.setAttribute('aria-label', 'Open Pinpoint');
+    launcherBtn.innerHTML = '<span class="pnpt-launcher-icon" aria-hidden="true"></span>';
+    launcherBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleMainPanel();
+    });
+
+    mainPanel = document.createElement('aside');
+    mainPanel.className = 'pnpt-main-panel';
+    mainPanel.innerHTML = `
+      <div class="pnpt-main-panel-header">
+        <strong>Pinpoint</strong>
         <button type="button" class="pnpt-panel-close" aria-label="Close">×</button>
       </div>
-      <input type="search" class="pnpt-panel-search" placeholder="Filter feedback…">
-      <ul class="pnpt-panel-list"></ul>
+      <p class="pnpt-proto-label" hidden></p>
+      <div class="pnpt-panel-status pnpt-panel-status-error" hidden></div>
+      <div class="pnpt-panel-tabs" role="tablist">
+        <button type="button" class="pnpt-tab active" data-tab="capture" role="tab">Capture</button>
+        <button type="button" class="pnpt-tab" data-tab="feedback" role="tab">All feedback</button>
+      </div>
+      <div class="pnpt-tab-panel" data-tab-panel="capture">
+        <p class="pnpt-capture-hint"></p>
+        <button type="button" class="pnpt-capture-start-btn pnpt-btn-primary">Start capture</button>
+      </div>
+      <div class="pnpt-tab-panel" data-tab-panel="feedback" hidden>
+        <input type="search" class="pnpt-panel-search" placeholder="Filter feedback…">
+        <ul class="pnpt-panel-list"></ul>
+        <a class="pnpt-dashboard-link" target="_blank" rel="noopener noreferrer">Open dashboard (export)</a>
+      </div>
     `;
-    slidePanel.querySelector('.pnpt-panel-close').addEventListener('click', () => toggleSlidePanel(false));
-    slidePanel.querySelector('.pnpt-panel-search').addEventListener('input', (e) => {
-      panelFilter = e.target.value;
-      renderPanelList(pinRecords);
+
+    mainPanel.querySelector('.pnpt-panel-close').addEventListener('click', () => toggleMainPanel(false));
+    mainPanel.querySelectorAll('.pnpt-tab').forEach((tabBtn) => {
+      tabBtn.addEventListener('click', () => setPanelTab(tabBtn.dataset.tab));
     });
-    document.body.appendChild(slidePanel);
-  }
-
-  function createToolbar() {
-    const bar = document.createElement('div');
-    bar.className = 'pnpt-toolbar';
-
-    toggleBtn = document.createElement('button');
-    toggleBtn.className = 'pnpt-toggle-btn';
-    toggleBtn.textContent = 'Pinpoint';
-    toggleBtn.type = 'button';
-    toggleBtn.title = 'Capture feedback';
-    toggleBtn.addEventListener('click', (e) => {
+    mainPanel.querySelector('.pnpt-capture-start-btn').addEventListener('click', (e) => {
       e.stopPropagation();
+      if (getPanelStatusMessage()) {
+        showToast(getPanelStatusMessage());
+        return;
+      }
       setFeedbackMode(!feedbackMode);
+      if (feedbackMode) toggleMainPanel(false);
+    });
+    mainPanel.querySelector('.pnpt-panel-search').addEventListener('input', (e) => {
+      panelFilter = e.target.value;
+      renderFeedbackTabList(pinRecords);
     });
 
-    const panelBtn = document.createElement('button');
-    panelBtn.className = 'pnpt-panel-toggle-btn';
-    panelBtn.type = 'button';
-    panelBtn.textContent = 'Feedback';
-    panelBtn.title = 'View all feedback';
-    panelBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleSlidePanel();
-    });
-
-    bar.appendChild(toggleBtn);
-    bar.appendChild(panelBtn);
-    document.body.appendChild(bar);
-  }
-
-  function createDashboardButton() {
-    dashboardBtn = document.createElement('a');
-    dashboardBtn.className = 'pnpt-dashboard-btn';
-    dashboardBtn.textContent = 'Open dashboard';
-    dashboardBtn.href = dashboardUrl;
-    dashboardBtn.target = '_blank';
-    dashboardBtn.rel = 'noopener noreferrer';
-    dashboardBtn.title = 'Open Pinpoint triage dashboard';
-    document.body.appendChild(dashboardBtn);
+    document.body.appendChild(mainPanel);
+    document.body.appendChild(launcherBtn);
+    updatePanelChrome();
+    setPanelTab('capture');
   }
 
   function init() {
     if (window.__pinpointInitialized) return;
     window.__pinpointInitialized = true;
 
-    createToolbar();
-    createSlidePanel();
-    createDashboardButton();
+    createPinpointUi();
     document.addEventListener('mouseover', onMouseOver, true);
     document.addEventListener('mouseout', onMouseOut, true);
     document.addEventListener('click', onClick, true);

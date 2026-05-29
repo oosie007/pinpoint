@@ -191,7 +191,18 @@ async function supabaseRest(path, options = {}) {
     }
   }
   if (!res.ok) {
-    const msg = data?.message || data?.error || res.statusText;
+    const msg =
+      data?.message ||
+      data?.error ||
+      data?.hint ||
+      (typeof data === 'string' ? data : null) ||
+      res.statusText;
+    if (res.status === 429) {
+      throw new Error('Too many requests. Please wait a minute and try again.');
+    }
+    if (res.status === 401) {
+      throw new Error('Session expired. Sign in again from the Pinpoint extension.');
+    }
     throw new Error(msg || `Request failed (${res.status})`);
   }
   return data;
@@ -212,7 +223,20 @@ async function storageUpload(filename, base64Data) {
     },
     body: bytes,
   });
-  if (!res.ok) throw new Error('Screenshot upload failed');
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    let detail = 'Screenshot upload failed';
+    try {
+      const parsed = JSON.parse(errText);
+      detail = parsed.message || parsed.error || detail;
+    } catch {
+      if (errText) detail = errText;
+    }
+    if (res.status === 401) {
+      throw new Error('Sign in required to upload screenshots.');
+    }
+    throw new Error(detail);
+  }
   return `${url}/storage/v1/object/public/screenshots/${filename}`;
 }
 
@@ -364,14 +388,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return acceptInviteToken(message.token);
       case 'INVITE_COLLABORATOR':
         return inviteCollaborator(message.prototypeId, message.email, message.role);
-      case 'CAPTURE_SCREENSHOT':
-        return new Promise((resolve) => {
+      case 'CAPTURE_SCREENSHOT': {
+        let windowId = _sender.tab?.windowId;
+        if (!windowId && _sender.tab?.id) {
+          const tab = await chrome.tabs.get(_sender.tab.id);
+          windowId = tab.windowId;
+        }
+        if (!windowId) {
+          const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+          windowId = active?.windowId;
+        }
+        if (!windowId) throw new Error('Could not capture screenshot (no active tab)');
+        return new Promise((resolve, reject) => {
           chrome.tabs.captureVisibleTab(
-            _sender.tab.windowId,
-            { format: 'png', quality: 90 },
-            (dataUrl) => resolve({ dataUrl })
+            windowId,
+            { format: 'png' },
+            (dataUrl) => {
+              if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+              }
+              if (!dataUrl) {
+                reject(new Error('Screenshot capture returned empty'));
+                return;
+              }
+              resolve({ dataUrl });
+            }
           );
         });
+      }
       default:
         throw new Error('Unknown message type');
     }

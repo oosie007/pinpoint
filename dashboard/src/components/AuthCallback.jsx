@@ -27,7 +27,11 @@ export default function AuthCallback() {
       const { data, error } = await supabase.auth.getSession();
       if (error) setStatus(error.message);
       else if (data.session) window.location.replace('/');
-      else setStatus('No session found. Request a new magic link.');
+      else {
+        setStatus(
+          'No session found. Request a new magic link from the dashboard, or sign in from the Pinpoint browser extension popup.'
+        );
+      }
     }
     finish();
   }, []);

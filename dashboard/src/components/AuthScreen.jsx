@@ -11,7 +11,13 @@ export default function AuthScreen() {
     e.preventDefault();
     setError(null);
     setLoading(true);
-    const redirectTo = `${window.location.origin}/auth/callback`;
+    const appUrl = (
+      import.meta.env.VITE_APP_URL ||
+      (import.meta.env.PROD
+        ? 'https://pinpoint-nu-jade.vercel.app'
+        : window.location.origin)
+    ).replace(/\/$/, '');
+    const redirectTo = `${appUrl}/auth/callback`;
     const { error: otpError } = await supabase.auth.signInWithOtp({
       email: email.trim(),
       options: { emailRedirectTo: redirectTo },
