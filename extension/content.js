@@ -37,6 +37,12 @@
   let allFeedbackPanel = null;
   let popover = null;
   let tooltip = null;
+  let drawLayer = null;
+  let replayOverlay = null;
+  let replayTimer = null;
+  let replayScrollHandler = null;
+  let replayResizeHandler = null;
+  let activeReplayData = null;
 
   function getPrototypeId() {
     const meta = document.querySelector('meta[name="prototype-id"]');
@@ -263,6 +269,9 @@
     pinEl.addEventListener('click', (e) => {
       e.stopPropagation();
       show(e);
+      if (item.annotation_data) {
+        renderAnnotationOverlay(item.annotation_data, { duration: 5000 });
+      }
     });
     pinEl.addEventListener('mouseenter', show);
     pinEl.addEventListener('mouseleave', hide);
@@ -287,6 +296,9 @@
     highlightTargetElement(el, item.category);
     const rect = el.getBoundingClientRect();
     showPinTooltip(item, rect.left + rect.width / 2, rect.top);
+    if (item.annotation_data) {
+      renderAnnotationOverlay(item.annotation_data, { duration: 5000 });
+    }
     setTimeout(clearTargetHighlight, 3000);
   }
 
@@ -409,7 +421,12 @@
       hoveredEl.classList.remove('pnpt-hover-highlight');
       hoveredEl = null;
     }
-    closePopover();
+    if (!on) {
+      closePopover();
+      removeDrawLayer();
+    } else {
+      closePopover();
+    }
   }
 
   function closePopover() {
@@ -417,6 +434,7 @@
       popover.remove();
       popover = null;
     }
+    removeDrawLayer();
   }
 
   function positionPopover(x, y) {
@@ -473,24 +491,66 @@
     if (!res.ok) throw new Error('Feedback insert failed');
   }
 
+  function isDocumentCoords(annotationData) {
+    if (!annotationData) return false;
+    if (annotationData.coordinateSpace === 'document' || annotationData.version >= 2) return true;
+    const first = annotationData.strokes && annotationData.strokes[0];
+    if (!first || !first.points || !first.points.length) return false;
+    const pt = first.points[0];
+    return pt && typeof pt === 'object' && !Array.isArray(pt) && 'x' in pt;
+  }
+
   function getCaptureContext(el) {
     const rect = el.getBoundingClientRect();
     return {
       elementRect: {
-        left: rect.left,
-        top: rect.top,
+        left: rect.left + window.scrollX,
+        top: rect.top + window.scrollY,
         width: rect.width,
         height: rect.height,
       },
       viewport: {
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
         width: window.innerWidth,
         height: window.innerHeight,
       },
     };
   }
 
-  function drawStrokesOnContext(ctx, width, height, strokes, elementRect, viewport) {
-    if (elementRect && viewport) {
+  function elementRectToViewport(elementRect, viewport, documentCoords) {
+    if (!elementRect || !viewport) return null;
+    if (documentCoords) {
+      return {
+        left: elementRect.left - (viewport.scrollX || 0),
+        top: elementRect.top - (viewport.scrollY || 0),
+        width: elementRect.width,
+        height: elementRect.height,
+      };
+    }
+    return elementRect;
+  }
+
+  function strokePointsToNormalized(points, viewport, documentCoords) {
+    const vw = viewport.width || window.innerWidth;
+    const vh = viewport.height || window.innerHeight;
+    const sx = viewport.scrollX || 0;
+    const sy = viewport.scrollY || 0;
+    return points.map((pt) => {
+      if (documentCoords) {
+        return [(pt.x - sx) / vw, (pt.y - sy) / vh];
+      }
+      return [pt[0], pt[1]];
+    });
+  }
+
+  function drawStrokesOnContext(ctx, width, height, strokes, elementRect, viewport, documentCoords) {
+    const docCoords = documentCoords !== undefined
+      ? documentCoords
+      : isDocumentCoords({ strokes, elementRect, viewport });
+
+    const vpRect = elementRectToViewport(elementRect, viewport, docCoords);
+    if (vpRect && viewport) {
       const scaleX = width / viewport.width;
       const scaleY = height / viewport.height;
       ctx.save();
@@ -498,30 +558,34 @@
       ctx.lineWidth = 2 * Math.max(scaleX, scaleY);
       ctx.setLineDash([6 * scaleX, 4 * scaleX]);
       ctx.strokeRect(
-        elementRect.left * scaleX,
-        elementRect.top * scaleY,
-        elementRect.width * scaleX,
-        elementRect.height * scaleY
+        vpRect.left * scaleX,
+        vpRect.top * scaleY,
+        vpRect.width * scaleX,
+        vpRect.height * scaleY
       );
       ctx.restore();
     }
 
     strokes.forEach((stroke) => {
       if (!stroke.points || stroke.points.length < 2) return;
+      const normalized = strokePointsToNormalized(stroke.points, viewport, docCoords);
       ctx.beginPath();
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      const lineWidth = (stroke.width || 3) * width;
-      ctx.lineWidth = lineWidth;
+      const baseWidth = docCoords
+        ? (stroke.width || 0.004) * (viewport.width || width)
+        : (stroke.width || 3) * width;
+      let lineWidth = baseWidth;
       if (stroke.tool === 'highlighter') {
         ctx.globalAlpha = 0.35;
         ctx.strokeStyle = stroke.color;
-        ctx.lineWidth = lineWidth * 3;
+        lineWidth = baseWidth * 3;
       } else {
         ctx.globalAlpha = 1;
         ctx.strokeStyle = stroke.color;
       }
-      stroke.points.forEach((pt, i) => {
+      ctx.lineWidth = lineWidth * (width / (viewport.width || width));
+      normalized.forEach((pt, i) => {
         const x = pt[0] * width;
         const y = pt[1] * height;
         if (i === 0) ctx.moveTo(x, y);
@@ -532,11 +596,68 @@
     });
   }
 
-  function redrawAnnotationCanvas(canvas, ctx, img, strokes, elementRect, viewport) {
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-    drawStrokesOnContext(ctx, w, h, strokes, elementRect, viewport);
+  function drawStrokesOnPageCanvas(ctx, strokes, elementRect, options) {
+    const opacity = (options && options.opacity) != null ? options.opacity : 1;
+    const docCoords = options && options.documentCoords;
+
+    if (elementRect && docCoords) {
+      const vpRect = elementRectToViewport(elementRect, {
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+        width: window.innerWidth,
+        height: window.innerHeight,
+      }, true);
+      if (vpRect) {
+        ctx.save();
+        ctx.strokeStyle = `rgba(99, 102, 241, ${0.9 * opacity})`;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(vpRect.left, vpRect.top, vpRect.width, vpRect.height);
+        ctx.restore();
+      }
+    } else if (elementRect && !docCoords) {
+      ctx.save();
+      ctx.strokeStyle = `rgba(99, 102, 241, ${0.9 * opacity})`;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(elementRect.left, elementRect.top, elementRect.width, elementRect.height);
+      ctx.restore();
+    }
+
+    strokes.forEach((stroke) => {
+      if (!stroke.points || stroke.points.length < 2) return;
+      ctx.beginPath();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      const baseWidth = docCoords
+        ? (stroke.width || 0.004) * window.innerWidth
+        : (stroke.width || 3) * window.innerWidth;
+      let lineWidth = baseWidth;
+      if (stroke.tool === 'highlighter') {
+        ctx.globalAlpha = 0.35 * opacity;
+        ctx.strokeStyle = stroke.color;
+        lineWidth = baseWidth * 3;
+      } else {
+        ctx.globalAlpha = opacity;
+        ctx.strokeStyle = stroke.color;
+      }
+      ctx.lineWidth = lineWidth;
+      stroke.points.forEach((pt, i) => {
+        let x;
+        let y;
+        if (docCoords) {
+          x = pt.x - window.scrollX;
+          y = pt.y - window.scrollY;
+        } else {
+          x = pt[0] * window.innerWidth;
+          y = pt[1] * window.innerHeight;
+        }
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    });
   }
 
   function compositeScreenshot(baseDataUrl, annotationData) {
@@ -549,9 +670,14 @@
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0);
         const strokes = (annotationData && annotationData.strokes) || [];
+        if (!strokes.length) {
+          resolve(baseDataUrl);
+          return;
+        }
         const elementRect = annotationData && annotationData.elementRect;
         const viewport = annotationData && annotationData.viewport;
-        drawStrokesOnContext(ctx, canvas.width, canvas.height, strokes, elementRect, viewport);
+        const docCoords = isDocumentCoords(annotationData);
+        drawStrokesOnContext(ctx, canvas.width, canvas.height, strokes, elementRect, viewport, docCoords);
         resolve(canvas.toDataURL('image/png'));
       };
       img.onerror = reject;
@@ -559,48 +685,97 @@
     });
   }
 
-  function createAnnotationEditor(screenshotDataUrl, captureContext) {
-    const wrap = document.createElement('div');
-    wrap.className = 'pnpt-annotate-wrap';
+  function removeDrawLayer() {
+    if (drawLayer) {
+      drawLayer.remove();
+      drawLayer = null;
+    }
+  }
 
-    const stage = document.createElement('div');
-    stage.className = 'pnpt-annotate-stage';
+  function clearAnnotationOverlay() {
+    if (replayTimer) {
+      clearTimeout(replayTimer);
+      replayTimer = null;
+    }
+    if (replayScrollHandler) {
+      window.removeEventListener('scroll', replayScrollHandler);
+      replayScrollHandler = null;
+    }
+    if (replayResizeHandler) {
+      window.removeEventListener('resize', replayResizeHandler);
+      replayResizeHandler = null;
+    }
+    if (replayOverlay) {
+      replayOverlay.remove();
+      replayOverlay = null;
+    }
+    activeReplayData = null;
+  }
 
-    const img = document.createElement('img');
-    img.className = 'pnpt-screenshot-thumb';
-    img.src = screenshotDataUrl;
-    img.alt = 'Screenshot';
+  function redrawReplayOverlay() {
+    if (!replayOverlay || !activeReplayData) return;
+    const canvas = replayOverlay.querySelector('canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const strokes = activeReplayData.strokes || [];
+    if (!strokes.length) return;
+    const docCoords = isDocumentCoords(activeReplayData);
+    drawStrokesOnPageCanvas(ctx, strokes, activeReplayData.elementRect, {
+      documentCoords: docCoords,
+      opacity: activeReplayData._opacity != null ? activeReplayData._opacity : 1,
+    });
+  }
 
+  function renderAnnotationOverlay(annotationData, options) {
+    if (!annotationData || !annotationData.strokes || !annotationData.strokes.length) return;
+    clearAnnotationOverlay();
+    activeReplayData = Object.assign({}, annotationData);
+    if (options && options.opacity != null) activeReplayData._opacity = options.opacity;
+
+    replayOverlay = document.createElement('div');
+    replayOverlay.className = 'pnpt-replay-layer';
     const canvas = document.createElement('canvas');
-    canvas.className = 'pnpt-annotate-canvas';
+    replayOverlay.appendChild(canvas);
+    document.body.appendChild(replayOverlay);
+    redrawReplayOverlay();
 
+    replayScrollHandler = () => redrawReplayOverlay();
+    replayResizeHandler = () => redrawReplayOverlay();
+    window.addEventListener('scroll', replayScrollHandler, { passive: true });
+    window.addEventListener('resize', replayResizeHandler, { passive: true });
+
+    const duration = (options && options.duration) || 0;
+    if (duration > 0) {
+      replayTimer = setTimeout(clearAnnotationOverlay, duration);
+    }
+  }
+
+  function createAnnotateToolbar(onToolChange) {
     const toolbar = document.createElement('div');
-    toolbar.className = 'pnpt-annotate-toolbar';
+    toolbar.className = 'pnpt-draw-toolbar pnpt-annotate-toolbar';
 
-    const strokes = [];
-    let activeTool = 'pen';
-    let activeColor = ANNOTATE_COLORS[0];
-    let drawing = false;
-    let currentStroke = null;
-    let ctx = null;
+    const hint = document.createElement('p');
+    hint.className = 'pnpt-draw-hint';
+    hint.textContent = 'Draw on the page to highlight the element, then click Done';
+    toolbar.appendChild(hint);
 
     const penBtn = document.createElement('button');
     penBtn.type = 'button';
     penBtn.className = 'pnpt-annotate-tool active';
     penBtn.textContent = 'Pen';
-    penBtn.title = 'Pen';
 
     const hiBtn = document.createElement('button');
     hiBtn.type = 'button';
     hiBtn.className = 'pnpt-annotate-tool';
     hiBtn.textContent = 'Highlight';
-    hiBtn.title = 'Highlighter';
 
     const undoBtn = document.createElement('button');
     undoBtn.type = 'button';
     undoBtn.className = 'pnpt-annotate-tool';
     undoBtn.textContent = 'Undo';
-    undoBtn.title = 'Undo last stroke';
 
     toolbar.appendChild(penBtn);
     toolbar.appendChild(hiBtn);
@@ -608,12 +783,12 @@
 
     const colorRow = document.createElement('div');
     colorRow.className = 'pnpt-annotate-colors';
+    let activeColor = ANNOTATE_COLORS[0];
     const colorButtons = ANNOTATE_COLORS.map((c) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'pnpt-annotate-color';
       b.style.background = c;
-      b.title = c;
       if (c === activeColor) b.classList.add('active');
       b.addEventListener('click', () => {
         activeColor = c;
@@ -622,140 +797,208 @@
       colorRow.appendChild(b);
       return b;
     });
-
     toolbar.appendChild(colorRow);
-    stage.appendChild(img);
-    stage.appendChild(canvas);
-    wrap.appendChild(toolbar);
-    wrap.appendChild(stage);
 
-    function canvasPoint(e) {
-      const rect = canvas.getBoundingClientRect();
-      return {
-        x: (e.clientX - rect.left) / rect.width,
-        y: (e.clientY - rect.top) / rect.height,
-      };
-    }
-
-    function setupCanvas() {
-      const displayWidth = stage.clientWidth || wrap.clientWidth || 268;
-      const scale = displayWidth / img.naturalWidth;
-      const displayHeight = Math.round(img.naturalHeight * scale);
-      canvas.width = displayWidth;
-      canvas.height = displayHeight;
-      canvas.style.width = `${displayWidth}px`;
-      canvas.style.height = `${displayHeight}px`;
-      ctx = canvas.getContext('2d');
-      redrawAnnotationCanvas(
-        canvas,
-        ctx,
-        img,
-        strokes,
-        captureContext.elementRect,
-        captureContext.viewport
-      );
-    }
-
-    img.addEventListener('load', setupCanvas);
-
+    let activeTool = 'pen';
     penBtn.addEventListener('click', () => {
       activeTool = 'pen';
       penBtn.classList.add('active');
       hiBtn.classList.remove('active');
+      onToolChange(activeTool);
     });
-
     hiBtn.addEventListener('click', () => {
       activeTool = 'highlighter';
       hiBtn.classList.add('active');
       penBtn.classList.remove('active');
+      onToolChange(activeTool);
     });
-
-    undoBtn.addEventListener('click', () => {
-      strokes.pop();
-      redrawAnnotationCanvas(
-        canvas,
-        ctx,
-        img,
-        strokes,
-        captureContext.elementRect,
-        captureContext.viewport
-      );
-    });
-
-    function onPointerDown(e) {
-      e.preventDefault();
-      drawing = true;
-      const pt = canvasPoint(e);
-      currentStroke = {
-        tool: activeTool,
-        color: activeColor,
-        width: activeTool === 'highlighter' ? 0.008 : 0.004,
-        points: [[pt.x, pt.y]],
-      };
-      strokes.push(currentStroke);
-    }
-
-    function onPointerMove(e) {
-      if (!drawing || !currentStroke) return;
-      e.preventDefault();
-      const pt = canvasPoint(e);
-      currentStroke.points.push([pt.x, pt.y]);
-      redrawAnnotationCanvas(
-        canvas,
-        ctx,
-        img,
-        strokes,
-        captureContext.elementRect,
-        captureContext.viewport
-      );
-    }
-
-    function onPointerUp() {
-      drawing = false;
-      currentStroke = null;
-    }
-
-    canvas.addEventListener('pointerdown', onPointerDown);
-    canvas.addEventListener('pointermove', onPointerMove);
-    canvas.addEventListener('pointerup', onPointerUp);
-    canvas.addEventListener('pointerleave', onPointerUp);
 
     return {
-      wrap,
-      getAnnotationData() {
+      toolbar,
+      getActiveTool: () => activeTool,
+      getActiveColor: () => activeColor,
+      undoBtn,
+    };
+  }
+
+  function openPageDrawLayer(captureContext) {
+    return new Promise((resolve) => {
+      removeDrawLayer();
+      const strokes = [];
+      let drawing = false;
+      let currentStroke = null;
+      let activeTool = 'pen';
+
+      drawLayer = document.createElement('div');
+      drawLayer.className = 'pnpt-draw-layer';
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        redraw();
+      }
+
+      function redraw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawStrokesOnPageCanvas(ctx, strokes, captureContext.elementRect, { documentCoords: true });
+      }
+
+      const { toolbar, getActiveTool, getActiveColor, undoBtn } = createAnnotateToolbar((tool) => {
+        activeTool = tool;
+      });
+
+      const doneBtn = document.createElement('button');
+      doneBtn.type = 'button';
+      doneBtn.className = 'pnpt-draw-done-btn';
+      doneBtn.textContent = 'Done';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'pnpt-draw-cancel-btn';
+      cancelBtn.textContent = 'Cancel';
+
+      toolbar.appendChild(doneBtn);
+      toolbar.appendChild(cancelBtn);
+
+      drawLayer.appendChild(canvas);
+      document.body.appendChild(drawLayer);
+      document.body.appendChild(toolbar);
+      resizeCanvas();
+
+      undoBtn.addEventListener('click', () => {
+        strokes.pop();
+        redraw();
+      });
+
+      function docPoint(e) {
+        return { x: e.clientX + window.scrollX, y: e.clientY + window.scrollY };
+      }
+
+      function onPointerDown(e) {
+        if (e.target.closest('.pnpt-draw-toolbar')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        drawing = true;
+        canvas.setPointerCapture(e.pointerId);
+        const pt = docPoint(e);
+        activeTool = getActiveTool();
+        currentStroke = {
+          tool: activeTool,
+          color: getActiveColor(),
+          width: activeTool === 'highlighter' ? 0.008 : 0.004,
+          points: [pt],
+        };
+        strokes.push(currentStroke);
+      }
+
+      function onPointerMove(e) {
+        if (!drawing || !currentStroke) return;
+        e.preventDefault();
+        currentStroke.points.push(docPoint(e));
+        redraw();
+      }
+
+      function onPointerUp(e) {
+        if (!drawing) return;
+        drawing = false;
+        currentStroke = null;
+        try {
+          canvas.releasePointerCapture(e.pointerId);
+        } catch (err) {
+          /* ignore */
+        }
+      }
+
+      canvas.addEventListener('pointerdown', onPointerDown);
+      canvas.addEventListener('pointermove', onPointerMove);
+      canvas.addEventListener('pointerup', onPointerUp);
+      canvas.addEventListener('pointercancel', onPointerUp);
+
+      function teardown() {
+        canvas.removeEventListener('pointerdown', onPointerDown);
+        canvas.removeEventListener('pointermove', onPointerMove);
+        canvas.removeEventListener('pointerup', onPointerUp);
+        canvas.removeEventListener('pointercancel', onPointerUp);
+        window.removeEventListener('resize', resizeCanvas);
+        toolbar.remove();
+        removeDrawLayer();
+      }
+
+      function buildAnnotationData() {
         return {
+          version: 2,
+          coordinateSpace: 'document',
           strokes: strokes.map((s) => ({
             tool: s.tool,
             color: s.color,
             width: s.width,
-            points: s.points.slice(),
+            points: s.points.map((p) => ({ x: p.x, y: p.y })),
           })),
           elementRect: captureContext.elementRect,
-          viewport: captureContext.viewport,
+          viewport: {
+            scrollX: window.scrollX,
+            scrollY: window.scrollY,
+            width: window.innerWidth,
+            height: window.innerHeight,
+          },
         };
-      },
-    };
+      }
+
+      doneBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        doneBtn.disabled = true;
+        doneBtn.textContent = 'Capturing…';
+        const annotationData = buildAnnotationData();
+        const screenshotDataUrl = await captureScreenshot();
+        teardown();
+        resolve({ annotationData, screenshotDataUrl });
+      });
+
+      cancelBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        teardown();
+        resolve(null);
+      });
+
+      window.addEventListener('resize', resizeCanvas, { passive: true });
+    });
   }
 
-  async function showPopover(el, clickX, clickY) {
+  function isPnptUiElement(target) {
+    return !!(
+      target.closest('.pnpt-toggle-btn') ||
+      target.closest('.pnpt-dashboard-btn') ||
+      target.closest('.pnpt-popover') ||
+      target.closest('.pnpt-pin') ||
+      target.closest('.pnpt-toast') ||
+      target.closest('.pnpt-all-feedback-panel') ||
+      target.closest('.pnpt-draw-layer') ||
+      target.closest('.pnpt-draw-toolbar') ||
+      target.closest('.pnpt-replay-layer')
+    );
+  }
+
+  async function showFeedbackPopover(el, clickX, clickY, screenshotDataUrl, annotationData) {
     closePopover();
-    const screenshotDataUrl = await captureScreenshot();
-    if (!screenshotDataUrl) {
-      showToast('Could not capture screenshot');
-      return;
-    }
 
     const selector = generateSelector(el);
     const elementText = getElementText(el);
     const protoId = getPrototypeId();
     const pageUrl = getPageUrl();
-    const captureContext = getCaptureContext(el);
 
     popover = document.createElement('div');
     popover.className = 'pnpt-popover';
 
-    const editor = createAnnotationEditor(screenshotDataUrl, captureContext);
-    popover.appendChild(editor.wrap);
+    if (screenshotDataUrl) {
+      const preview = document.createElement('img');
+      preview.className = 'pnpt-screenshot-preview';
+      preview.src = screenshotDataUrl;
+      preview.alt = 'Annotated screenshot';
+      popover.appendChild(preview);
+    }
 
     const nameLabel = document.createElement('label');
     nameLabel.textContent = 'Your name';
@@ -839,9 +1082,11 @@
       submitBtn.textContent = 'Saving...';
 
       try {
-        const annotationData = editor.getAnnotationData();
-        const compositeDataUrl = await compositeScreenshot(screenshotDataUrl, annotationData);
-        const screenshotUrl = await uploadScreenshot(compositeDataUrl);
+        const hasStrokes = annotationData.strokes && annotationData.strokes.length > 0;
+        const uploadDataUrl = hasStrokes
+          ? screenshotDataUrl
+          : await compositeScreenshot(screenshotDataUrl, annotationData);
+        const screenshotUrl = await uploadScreenshot(uploadDataUrl);
         await submitFeedback({
           prototype_id: protoId,
           page_url: pageUrl,
@@ -870,17 +1115,35 @@
     popover.addEventListener('click', (e) => e.stopPropagation());
   }
 
+  async function startFeedbackFlow(el, clickX, clickY) {
+    closePopover();
+    removeDrawLayer();
+    const captureContext = getCaptureContext(el);
+    const drawResult = await openPageDrawLayer(captureContext);
+    if (!drawResult) {
+      setFeedbackMode(false);
+      return;
+    }
+    let { annotationData, screenshotDataUrl } = drawResult;
+    if (!screenshotDataUrl) {
+      screenshotDataUrl = await captureScreenshot();
+    }
+    if (!screenshotDataUrl) {
+      showToast('Could not capture screenshot');
+      setFeedbackMode(false);
+      return;
+    }
+    const hasStrokes = annotationData.strokes && annotationData.strokes.length > 0;
+    if (!hasStrokes) {
+      screenshotDataUrl = await compositeScreenshot(screenshotDataUrl, annotationData);
+    }
+    await showFeedbackPopover(el, clickX, clickY, screenshotDataUrl, annotationData);
+  }
+
   function onMouseOver(e) {
     if (!feedbackMode) return;
     const target = e.target;
-    if (
-      target.closest('.pnpt-toggle-btn') ||
-      target.closest('.pnpt-dashboard-btn') ||
-      target.closest('.pnpt-popover') ||
-      target.closest('.pnpt-pin') ||
-      target.closest('.pnpt-toast') ||
-      target.closest('.pnpt-all-feedback-panel')
-    ) {
+    if (isPnptUiElement(target)) {
       return;
     }
     if (hoveredEl && hoveredEl !== target) {
@@ -901,20 +1164,14 @@
   function onClick(e) {
     if (!feedbackMode) return;
     const target = e.target;
-    if (
-      target.closest('.pnpt-toggle-btn') ||
-      target.closest('.pnpt-dashboard-btn') ||
-      target.closest('.pnpt-popover') ||
-      target.closest('.pnpt-pin') ||
-      target.closest('.pnpt-all-feedback-panel')
-    ) {
+    if (isPnptUiElement(target)) {
       return;
     }
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
     if (hoveredEl) hoveredEl.classList.remove('pnpt-hover-highlight');
-    showPopover(target, e.clientX, e.clientY);
+    startFeedbackFlow(target, e.clientX, e.clientY);
   }
 
   function createToggleButton() {
