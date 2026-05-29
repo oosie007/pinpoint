@@ -1,0 +1,6 @@
+node_modules/
+.env
+.env.local
+dashboard/dist/
+.DS_Store
+extension/node_modules/

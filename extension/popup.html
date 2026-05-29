@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 280px;
+      padding: 16px;
+      font-family: system-ui, sans-serif;
+      font-size: 13px;
+      color: #111;
+    }
+    h1 {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #6366f1;
+    }
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: #6b7280;
+      margin-bottom: 4px;
+      margin-top: 10px;
+    }
+    label:first-of-type { margin-top: 0; }
+    input {
+      width: 100%;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-family: inherit;
+    }
+    input:focus { outline: none; border-color: #6366f1; }
+    button {
+      width: 100%;
+      margin-top: 14px;
+      background: #6366f1;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 9px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: #4f46e5; }
+    .saved {
+      display: none;
+      margin-top: 10px;
+      color: #10b981;
+      font-size: 12px;
+      font-weight: 500;
+      text-align: center;
+    }
+    .saved.visible { display: block; }
+  </style>
+</head>
+<body>
+  <h1>Pinpoint</h1>
+  <label for="supabase-url">Supabase URL</label>
+  <input type="url" id="supabase-url" placeholder="https://xxx.supabase.co">
+  <label for="supabase-key">Supabase Anon Key</label>
+  <input type="password" id="supabase-key" placeholder="eyJ...">
+  <button id="save-btn">Save</button>
+  <div class="saved" id="saved-msg">✓ Saved</div>
+  <script src="popup.js"></script>
+</body>
+</html>
