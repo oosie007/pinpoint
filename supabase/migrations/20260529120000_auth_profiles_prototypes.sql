@@ -1,0 +1,2 @@
+-- See applied migration auth_profiles_prototypes_rls via Supabase MCP
+-- Profiles, prototypes, prototype_members, feedback columns, feedback_votes, RLS
