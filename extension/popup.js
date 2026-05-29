@@ -40,6 +40,22 @@ function parseHashTokens() {
   };
 }
 
+async function checkExtensionConfig() {
+  const configErrEl = document.getElementById('auth-config-error');
+  configErrEl.hidden = true;
+
+  const configRes = await bg({ type: 'GET_CONFIG' });
+  if (!configRes.ok || !configRes.data?.configured) {
+    showConfigError(
+      'Copy extension/config.example.js to extension/config.js and add your Supabase credentials, then reload the extension.'
+    );
+    document.getElementById('auth-send-btn').disabled = true;
+    return false;
+  }
+  document.getElementById('auth-send-btn').disabled = false;
+  return true;
+}
+
 async function tryRestoreSession() {
   const tokens = parseHashTokens();
   if (tokens) {
@@ -69,6 +85,7 @@ async function tryRestoreSession() {
     return true;
   }
   showScreen('auth');
+  await checkExtensionConfig();
   return false;
 }
 
@@ -77,6 +94,26 @@ function showToast(msg) {
   const prev = sub.textContent;
   sub.textContent = msg;
   setTimeout(() => { sub.textContent = prev; }, 2500);
+}
+
+function showAuthError(msg) {
+  const errEl = document.getElementById('auth-error');
+  errEl.textContent = msg;
+  errEl.hidden = false;
+  console.error('[Pinpoint]', msg);
+}
+
+function showConfigError(msg) {
+  const errEl = document.getElementById('auth-config-error');
+  errEl.textContent = msg;
+  errEl.hidden = false;
+}
+
+function setAuthLoading(loading) {
+  const btn = document.getElementById('auth-send-btn');
+  btn.disabled = loading;
+  btn.textContent = loading ? 'Sending…' : 'Send magic link';
+  btn.classList.toggle('pnpt-btn-loading', loading);
 }
 
 async function renderHome(session) {
@@ -126,23 +163,50 @@ async function openPrototypeDetail(proto) {
 
 document.getElementById('auth-send-btn').addEventListener('click', async () => {
   const email = document.getElementById('auth-email').value.trim();
-  const errEl = document.getElementById('auth-error');
-  errEl.hidden = true;
+  document.getElementById('auth-error').hidden = true;
   if (!email) {
-    errEl.textContent = 'Enter your email';
-    errEl.hidden = false;
+    showAuthError('Enter your email');
     return;
   }
-  const res = await bg({ type: 'SIGN_IN_OTP', email });
-  if (!res.ok) {
-    errEl.textContent = res.error;
-    errEl.hidden = false;
-    return;
+
+  setAuthLoading(true);
+  try {
+    const configRes = await bg({ type: 'GET_CONFIG' });
+    if (!configRes.ok) {
+      showAuthError(configRes.error || 'Extension is not configured');
+      showToast(configRes.error || 'Extension is not configured');
+      return;
+    }
+    if (!configRes.data?.configured) {
+      const msg =
+        'Copy extension/config.example.js to extension/config.js and add your Supabase credentials.';
+      showAuthError(msg);
+      showToast('Missing config.js');
+      return;
+    }
+
+    const res = await bg({ type: 'SIGN_IN_OTP', email });
+    if (!res.ok) {
+      showAuthError(res.error || 'Magic link failed');
+      showToast(res.error || 'Magic link failed');
+      return;
+    }
+    showScreen('checkEmail');
+    showToast('Check your email');
+  } catch (err) {
+    const msg = err?.message || 'Something went wrong';
+    showAuthError(msg);
+    showToast(msg);
+    console.error('[Pinpoint] magic link', err);
+  } finally {
+    setAuthLoading(false);
   }
-  showScreen('checkEmail');
 });
 
-document.getElementById('auth-back-btn').addEventListener('click', () => showScreen('auth'));
+document.getElementById('auth-back-btn').addEventListener('click', async () => {
+  showScreen('auth');
+  await checkExtensionConfig();
+});
 
 document.getElementById('sign-out-btn').addEventListener('click', async () => {
   await bg({ type: 'SIGN_OUT' });

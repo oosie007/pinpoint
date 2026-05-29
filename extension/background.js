@@ -1,4 +1,12 @@
-importScripts('config.js');
+try {
+  importScripts('config.js');
+} catch {
+  var PINPOINT_CONFIG = {
+    SUPABASE_URL: '',
+    SUPABASE_ANON_KEY: '',
+    DASHBOARD_URL: 'https://pinpoint-nu-jade.vercel.app',
+  };
+}
 
 const STORAGE_SESSION = 'PINPOINT_SESSION';
 const STORAGE_ACTIVE_PROTOTYPE = 'PINPOINT_ACTIVE_PROTOTYPE';
@@ -8,7 +16,26 @@ function getConfig() {
     url: (PINPOINT_CONFIG.SUPABASE_URL || '').replace(/\/$/, ''),
     anonKey: PINPOINT_CONFIG.SUPABASE_ANON_KEY || '',
     dashboardUrl: PINPOINT_CONFIG.DASHBOARD_URL || 'https://pinpoint-nu-jade.vercel.app',
+    configured: isConfigConfigured(),
   };
+}
+
+function isConfigConfigured() {
+  const url = PINPOINT_CONFIG.SUPABASE_URL || '';
+  const key = PINPOINT_CONFIG.SUPABASE_ANON_KEY || '';
+  return (
+    Boolean(url && key) &&
+    !url.includes('your-project.supabase.co') &&
+    !key.includes('your-anon-key')
+  );
+}
+
+function assertConfig() {
+  if (!isConfigConfigured()) {
+    throw new Error(
+      'Copy extension/config.example.js to extension/config.js and add your Supabase URL and anon key.'
+    );
+  }
 }
 
 function authHeaders(anonKey, accessToken) {
@@ -79,23 +106,30 @@ async function saveSessionFromAuthResponse(body) {
 }
 
 async function signInWithOtp(email) {
-  const { url, anonKey, dashboardUrl } = getConfig();
-  const extensionRedirect = chrome.runtime.getURL('popup.html');
+  assertConfig();
+  const { url, anonKey } = getConfig();
+  const emailRedirectTo = chrome.runtime.getURL('popup.html');
   const res = await fetch(`${url}/auth/v1/otp`, {
     method: 'POST',
     headers: authHeaders(anonKey),
     body: JSON.stringify({
       email,
       create_user: true,
-      data: {},
       options: {
-        email_redirect_to: extensionRedirect,
+        email_redirect_to: emailRedirectTo,
       },
     }),
   });
+  const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.msg || err.error_description || 'Magic link failed');
+    const msg =
+      body.msg ||
+      body.message ||
+      body.error_description ||
+      body.error ||
+      `Magic link failed (${res.status})`;
+    console.error('[Pinpoint] OTP request failed', res.status, body);
+    throw new Error(msg);
   }
   return { ok: true };
 }

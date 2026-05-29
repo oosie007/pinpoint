@@ -12,10 +12,11 @@
 
   <section id="screen-auth" class="pnpt-screen active">
     <p class="pnpt-msg">Sign in with a magic link sent to your email.</p>
+    <div class="pnpt-error" id="auth-config-error" hidden></div>
     <label class="pnpt-label" for="auth-email">Email</label>
     <input class="pnpt-input" type="email" id="auth-email" placeholder="you@company.com" autocomplete="email">
     <div class="pnpt-error" id="auth-error" hidden></div>
-    <button class="pnpt-btn" id="auth-send-btn">Send magic link</button>
+    <button class="pnpt-btn" id="auth-send-btn" type="button">Send magic link</button>
   </section>
 
   <section id="screen-check-email" class="pnpt-screen">
@@ -71,7 +72,6 @@
     <button class="pnpt-btn" id="save-settings-btn">Save settings</button>
   </section>
 
-  <script src="config.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

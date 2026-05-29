@@ -10,6 +10,7 @@
     "clipboardWrite"
   ],
   "host_permissions": [
+    "https://*.supabase.co/*",
     "<all_urls>"
   ],
   "background": {
