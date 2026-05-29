@@ -6,7 +6,8 @@
   "permissions": [
     "activeTab",
     "storage",
-    "tabs"
+    "tabs",
+    "clipboardWrite"
   ],
   "host_permissions": [
     "<all_urls>"

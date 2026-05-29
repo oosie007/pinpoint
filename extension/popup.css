@@ -1,0 +1,113 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  width: 360px;
+  min-height: 420px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: #111;
+  background: #fafafa;
+}
+
+.pnpt-popup-header {
+  padding: 14px 16px 10px;
+  background: #6366f1;
+  color: #fff;
+}
+
+.pnpt-popup-header h1 {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.pnpt-popup-header p {
+  font-size: 11px;
+  opacity: 0.85;
+  margin-top: 2px;
+}
+
+.pnpt-screen { display: none; padding: 16px; }
+.pnpt-screen.active { display: block; }
+
+.pnpt-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+
+.pnpt-input {
+  width: 100%;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.pnpt-btn {
+  width: 100%;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pnpt-btn:hover { background: #4f46e5; }
+.pnpt-btn.secondary { background: #e5e7eb; color: #374151; margin-top: 8px; }
+.pnpt-btn.link { background: transparent; color: #6366f1; width: auto; padding: 4px 0; }
+
+.pnpt-msg {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.5;
+  margin: 8px 0 12px;
+}
+
+.pnpt-error { color: #dc2626; font-size: 12px; margin-bottom: 8px; }
+
+.pnpt-proto-list { list-style: none; max-height: 220px; overflow-y: auto; }
+
+.pnpt-proto-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  background: #fff;
+}
+
+.pnpt-proto-item:hover { border-color: #6366f1; }
+.pnpt-proto-item strong { display: block; font-size: 13px; }
+.pnpt-proto-item span { font-size: 11px; color: #6b7280; }
+
+.pnpt-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pnpt-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.pnpt-toggle-row label { font-size: 12px; color: #374151; max-width: 240px; }
+
+.pnpt-invite-box {
+  background: #f3f4f6;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 11px;
+  word-break: break-all;
+  margin: 8px 0;
+}

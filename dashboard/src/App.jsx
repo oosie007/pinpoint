@@ -3,6 +3,9 @@ import { supabase } from './supabaseClient';
 import FilterBar from './components/FilterBar';
 import FeedbackFeed from './components/FeedbackFeed';
 import ExportButton from './components/ExportButton';
+import AuthScreen from './components/AuthScreen';
+import AuthCallback from './components/AuthCallback';
+import InvitePage from './components/InvitePage';
 
 const DEFAULT_FILTERS = {
   prototype: 'all',
@@ -43,7 +46,7 @@ function applyFilters(items, filters) {
   });
 }
 
-export default function App() {
+function DashboardApp() {
   const [feedback, setFeedback] = useState([]);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [loading, setLoading] = useState(true);
@@ -114,7 +117,16 @@ export default function App() {
           <h1 className="wordmark">Pinpoint</h1>
           <span className="count-badge">{filtered.length}</span>
         </div>
-        <ExportButton feedback={feedback} prototypeFilter={filters.prototype} />
+        <div className="app-header-right">
+          <ExportButton feedback={feedback} prototypeFilter={filters.prototype} />
+          <button
+            type="button"
+            className="sign-out-btn"
+            onClick={() => supabase.auth.signOut()}
+          >
+            Sign out
+          </button>
+        </div>
       </header>
 
       {missingEnv && (
@@ -142,4 +154,44 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+export default function App() {
+  const [session, setSession] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+
+  const path = window.location.pathname;
+  const inviteMatch = path.match(/^\/invite\/([^/]+)/);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthReady(true);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  if (path.startsWith('/auth/callback')) {
+    return <AuthCallback />;
+  }
+  if (inviteMatch) {
+    return <InvitePage token={inviteMatch[1]} />;
+  }
+
+  if (!authReady) {
+    return (
+      <div className="auth-screen">
+        <p className="auth-msg">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <AuthScreen />;
+  }
+
+  return <DashboardApp />;
 }

@@ -2,86 +2,76 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      width: 300px;
-      padding: 16px;
-      font-family: system-ui, sans-serif;
-      font-size: 13px;
-      color: #111;
-    }
-    h1 {
-      font-size: 15px;
-      font-weight: 700;
-      margin-bottom: 12px;
-      color: #6366f1;
-    }
-    label {
-      display: block;
-      font-size: 11px;
-      font-weight: 600;
-      color: #6b7280;
-      margin-bottom: 4px;
-      margin-top: 10px;
-    }
-    label:first-of-type { margin-top: 0; }
-    input, select {
-      width: 100%;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      padding: 7px 10px;
-      font-size: 12px;
-      font-family: inherit;
-    }
-    input:focus, select:focus { outline: none; border-color: #6366f1; }
-    button {
-      width: 100%;
-      margin-top: 14px;
-      background: #6366f1;
-      color: #fff;
-      border: none;
-      border-radius: 6px;
-      padding: 9px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    button:hover { background: #4f46e5; }
-    .hint {
-      font-size: 11px;
-      color: #6b7280;
-      margin-top: 4px;
-      line-height: 1.4;
-    }
-    .saved {
-      display: none;
-      margin-top: 10px;
-      color: #10b981;
-      font-size: 12px;
-      font-weight: 500;
-      text-align: center;
-    }
-    .saved.visible { display: block; }
-  </style>
+  <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <h1>Pinpoint</h1>
-  <label for="supabase-url">Supabase URL</label>
-  <input type="url" id="supabase-url" placeholder="https://xxx.supabase.co">
-  <label for="supabase-key">Supabase Anon Key</label>
-  <input type="password" id="supabase-key" placeholder="eyJ...">
-  <label for="dashboard-url">Dashboard URL (optional)</label>
-  <input type="url" id="dashboard-url" placeholder="https://pinpoint-nu-jade.vercel.app">
-  <p class="hint">Used by the “Open dashboard” button on prototype pages.</p>
-  <label for="pinpoint-mode">Mode</label>
-  <select id="pinpoint-mode">
-    <option value="reviewer">Reviewer — pins for this page only</option>
-    <option value="owner">Owner — all pins for this prototype</option>
-  </select>
-  <p class="hint">Owner mode shows feedback from every page in the prototype and an “All feedback” panel.</p>
-  <button id="save-btn">Save</button>
-  <div class="saved" id="saved-msg">✓ Saved</div>
+  <header class="pnpt-popup-header">
+    <h1>Pinpoint</h1>
+    <p id="header-subtitle">Visual feedback for prototypes</p>
+  </header>
+
+  <section id="screen-auth" class="pnpt-screen active">
+    <p class="pnpt-msg">Sign in with a magic link sent to your email.</p>
+    <label class="pnpt-label" for="auth-email">Email</label>
+    <input class="pnpt-input" type="email" id="auth-email" placeholder="you@company.com" autocomplete="email">
+    <div class="pnpt-error" id="auth-error" hidden></div>
+    <button class="pnpt-btn" id="auth-send-btn">Send magic link</button>
+  </section>
+
+  <section id="screen-check-email" class="pnpt-screen">
+    <p class="pnpt-msg">Check your email for the sign-in link. After you click it, return here — we'll detect your session automatically.</p>
+    <button class="pnpt-btn secondary" id="auth-back-btn">Use a different email</button>
+  </section>
+
+  <section id="screen-home" class="pnpt-screen">
+    <p class="pnpt-msg" id="home-greeting">Your prototypes</p>
+    <ul class="pnpt-proto-list" id="proto-list"></ul>
+    <button class="pnpt-btn" id="add-proto-btn">+ Add prototype</button>
+    <button class="pnpt-btn secondary" id="sign-out-btn">Sign out</button>
+  </section>
+
+  <section id="screen-add-proto" class="pnpt-screen">
+    <div class="pnpt-nav-row">
+      <button class="pnpt-btn link" id="add-back-btn">← Back</button>
+    </div>
+    <label class="pnpt-label" for="proto-name">Name</label>
+    <input class="pnpt-input" id="proto-name" placeholder="Marketing site v2">
+    <label class="pnpt-label" for="proto-url">Prototype URL</label>
+    <input class="pnpt-input" type="url" id="proto-url" placeholder="https://preview.example.com">
+    <div class="pnpt-error" id="add-error" hidden></div>
+    <button class="pnpt-btn" id="create-proto-btn">Create prototype</button>
+  </section>
+
+  <section id="screen-proto-detail" class="pnpt-screen">
+    <div class="pnpt-nav-row">
+      <button class="pnpt-btn link" id="detail-back-btn">← Prototypes</button>
+    </div>
+    <h2 id="detail-name" style="font-size:15px;margin-bottom:4px;"></h2>
+    <p class="pnpt-msg" id="detail-url"></p>
+    <button class="pnpt-btn" id="open-proto-btn">Open prototype</button>
+    <label class="pnpt-label" style="margin-top:12px;">Invite collaborator</label>
+    <input class="pnpt-input" type="email" id="invite-email" placeholder="collaborator@email.com">
+    <button class="pnpt-btn secondary" id="invite-btn">Send invite link</button>
+    <div class="pnpt-invite-box" id="invite-link-box" hidden></div>
+    <button class="pnpt-btn secondary" id="detail-settings-btn">Settings</button>
+  </section>
+
+  <section id="screen-settings" class="pnpt-screen">
+    <div class="pnpt-nav-row">
+      <button class="pnpt-btn link" id="settings-back-btn">← Prototype</button>
+    </div>
+    <div class="pnpt-toggle-row">
+      <label for="toggle-team-feedback">Show all team feedback on page</label>
+      <input type="checkbox" id="toggle-team-feedback">
+    </div>
+    <div class="pnpt-toggle-row">
+      <label for="toggle-upvotes">Allow upvotes on feedback</label>
+      <input type="checkbox" id="toggle-upvotes">
+    </div>
+    <button class="pnpt-btn" id="save-settings-btn">Save settings</button>
+  </section>
+
+  <script src="config.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

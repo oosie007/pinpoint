@@ -43,6 +43,23 @@
   let replayScrollHandler = null;
   let replayResizeHandler = null;
   let activeReplayData = null;
+  let sessionUser = null;
+  let activePrototype = null;
+  let slidePanel = null;
+  let panelOpen = false;
+  let panelFilter = '';
+
+  function bg(message) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(message, (res) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        resolve(res || { ok: false, error: 'No response' });
+      });
+    });
+  }
 
   function getPrototypeId() {
     const meta = document.querySelector('meta[name="prototype-id"]');
@@ -116,18 +133,20 @@
     return text.slice(0, 200) || null;
   }
 
-  function loadCredentials(callback) {
-    chrome.storage.local.get(
-      ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'PINPOINT_MODE', 'DASHBOARD_URL'],
-      (data) => {
-        supabaseUrl = (data.SUPABASE_URL || '').replace(/\/$/, '');
-        supabaseAnonKey = data.SUPABASE_ANON_KEY || '';
-        ownerMode = data.PINPOINT_MODE === 'owner';
-        dashboardUrl = (data.DASHBOARD_URL || '').trim() || DEFAULT_DASHBOARD_URL;
-        if (dashboardBtn) dashboardBtn.href = dashboardUrl;
-        callback();
-      }
-    );
+  async function loadState(callback) {
+    const configRes = await bg({ type: 'GET_CONFIG' });
+    if (configRes.ok && configRes.data) {
+      supabaseUrl = (configRes.data.url || '').replace(/\/$/, '');
+      supabaseAnonKey = configRes.data.anonKey || '';
+      dashboardUrl = configRes.data.dashboardUrl || DEFAULT_DASHBOARD_URL;
+    }
+    const sessionRes = await bg({ type: 'GET_SESSION' });
+    sessionUser = sessionRes.ok ? sessionRes.data?.session?.user : null;
+    const protoRes = await bg({ type: 'FIND_PROTOTYPE_FOR_PAGE', pageUrl: getPageUrl() });
+    activePrototype = protoRes.ok ? protoRes.data : null;
+    ownerMode = activePrototype ? activePrototype.show_team_feedback !== false : false;
+    if (dashboardBtn) dashboardBtn.href = dashboardUrl;
+    callback();
   }
 
   function dataUrlToBlob(dataUrl) {
@@ -386,25 +405,34 @@
   }
 
   async function fetchPins() {
-    if (!supabaseUrl || !supabaseAnonKey) return;
+    const sessionRes = await bg({ type: 'GET_SESSION' });
+    if (!sessionRes.ok || !sessionRes.data?.session) return;
+
+    if (!activePrototype) {
+      const protoRes = await bg({ type: 'FIND_PROTOTYPE_FOR_PAGE', pageUrl: getPageUrl() });
+      activePrototype = protoRes.ok ? protoRes.data : null;
+      ownerMode = activePrototype ? activePrototype.show_team_feedback !== false : false;
+    }
+
     const protoId = getPrototypeId();
     const pageUrl = getPageUrl();
-    let url = `${supabaseUrl}/rest/v1/feedback?prototype_id=eq.${encodeURIComponent(protoId)}&select=*&order=created_at.asc`;
+    let path;
+    if (activePrototype?.id) {
+      path = `feedback?prototype_uuid=eq.${activePrototype.id}&select=*&order=created_at.asc`;
+    } else {
+      path = `feedback?prototype_id=eq.${encodeURIComponent(protoId)}&select=*&order=created_at.asc`;
+    }
     if (!ownerMode) {
-      url += `&page_url=eq.${encodeURIComponent(pageUrl)}`;
+      path += `&page_url=eq.${encodeURIComponent(pageUrl)}`;
     }
 
     try {
-      const res = await fetch(url, {
-        headers: {
-          apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
-        },
-      });
+      const res = await bg({ type: 'REST', path });
       if (!res.ok) return;
-      const items = await res.json();
+      const items = res.data || [];
       pinRecords = items;
       renderPins(items);
+      if (panelOpen && slidePanel) renderPanelList(items);
     } catch (e) {
       console.warn('[Pinpoint] Failed to load pins', e);
     }
@@ -462,33 +490,38 @@
   }
 
   async function uploadScreenshot(dataUrl) {
-    const blob = dataUrlToBlob(dataUrl);
+    const base64 = dataUrl.split(',')[1];
     const filename = `${Date.now()}-${randomId()}.png`;
-    const res = await fetch(`${supabaseUrl}/storage/v1/object/screenshots/${filename}`, {
-      method: 'POST',
-      headers: {
-        apikey: supabaseAnonKey,
-        Authorization: `Bearer ${supabaseAnonKey}`,
-        'Content-Type': 'image/png',
-      },
-      body: blob,
-    });
-    if (!res.ok) throw new Error('Screenshot upload failed');
-    return `${supabaseUrl}/storage/v1/object/public/screenshots/${filename}`;
+    const res = await bg({ type: 'STORAGE_UPLOAD', filename, base64 });
+    if (!res.ok) throw new Error(res.error || 'Screenshot upload failed');
+    return res.data;
   }
 
   async function submitFeedback(record) {
-    const res = await fetch(`${supabaseUrl}/rest/v1/feedback`, {
+    const res = await bg({
+      type: 'REST',
       method: 'POST',
-      headers: {
-        apikey: supabaseAnonKey,
-        Authorization: `Bearer ${supabaseAnonKey}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal',
-      },
-      body: JSON.stringify(record),
+      path: 'feedback',
+      body: record,
+      prefer: 'return=minimal',
     });
-    if (!res.ok) throw new Error('Feedback insert failed');
+    if (!res.ok) throw new Error(res.error || 'Feedback insert failed');
+  }
+
+  async function toggleVote(feedbackId) {
+    if (!sessionUser?.id) {
+      showToast('Sign in to upvote');
+      return;
+    }
+    const res = await bg({
+      type: 'REST',
+      method: 'POST',
+      path: 'feedback_votes',
+      body: { feedback_id: feedbackId, user_id: sessionUser.id },
+      prefer: 'return=minimal',
+    });
+    if (!res.ok) showToast(res.error || 'Vote failed');
+    else await fetchPins();
   }
 
   function isDocumentCoords(annotationData) {
@@ -977,7 +1010,9 @@
       target.closest('.pnpt-all-feedback-panel') ||
       target.closest('.pnpt-draw-layer') ||
       target.closest('.pnpt-draw-toolbar') ||
-      target.closest('.pnpt-replay-layer')
+      target.closest('.pnpt-replay-layer') ||
+      target.closest('.pnpt-slide-panel') ||
+      target.closest('.pnpt-toolbar')
     );
   }
 
@@ -1073,8 +1108,8 @@
         return;
       }
 
-      if (!supabaseUrl || !supabaseAnonKey) {
-        showToast('Set Supabase credentials in extension popup');
+      if (!sessionUser) {
+        showToast('Sign in via the Pinpoint extension popup');
         return;
       }
 
@@ -1088,7 +1123,9 @@
           : await compositeScreenshot(screenshotDataUrl, annotationData);
         const screenshotUrl = await uploadScreenshot(uploadDataUrl);
         await submitFeedback({
-          prototype_id: protoId,
+          prototype_id: activePrototype?.prototype_slug || protoId,
+          prototype_uuid: activePrototype?.id || null,
+          user_id: sessionUser.id,
           page_url: pageUrl,
           element_selector: selector,
           element_text: elementText,
@@ -1174,17 +1211,99 @@
     startFeedbackFlow(target, e.clientX, e.clientY);
   }
 
-  function createToggleButton() {
+  function renderPanelList(items) {
+    const list = slidePanel?.querySelector('.pnpt-panel-list');
+    if (!list) return;
+    const q = panelFilter.trim().toLowerCase();
+    const filtered = q
+      ? items.filter(
+          (i) =>
+            (i.comment || '').toLowerCase().includes(q) ||
+            (i.user_name || '').toLowerCase().includes(q)
+        )
+      : items;
+    list.innerHTML = '';
+    if (!filtered.length) {
+      list.innerHTML = '<li class="pnpt-panel-empty">No feedback yet</li>';
+      return;
+    }
+    filtered.forEach((item, idx) => {
+      const li = document.createElement('li');
+      li.className = `pnpt-panel-item category-${item.category}`;
+      const votes = item.vote_count || 0;
+      const upvoteBtn =
+        activePrototype?.allow_upvotes !== false
+          ? `<button type="button" class="pnpt-upvote-btn" data-id="${item.id}">▲ ${votes}</button>`
+          : '';
+      li.innerHTML = `<div class="pnpt-panel-item-head"><strong>#${idx + 1}</strong> · ${escapeHtml(item.user_name)} · ${escapeHtml(item.category)}</div>
+        <p>${escapeHtml(item.comment)}</p>${upvoteBtn}`;
+      li.addEventListener('click', (e) => {
+        if (e.target.closest('.pnpt-upvote-btn')) return;
+        scrollToAndHighlight(item);
+      });
+      const voteBtn = li.querySelector('.pnpt-upvote-btn');
+      if (voteBtn) {
+        voteBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleVote(item.id);
+        });
+      }
+      list.appendChild(li);
+    });
+  }
+
+  function toggleSlidePanel(open) {
+    panelOpen = open !== undefined ? open : !panelOpen;
+    if (slidePanel) slidePanel.classList.toggle('pnpt-slide-panel-open', panelOpen);
+    if (panelOpen) fetchPins();
+  }
+
+  function createSlidePanel() {
+    slidePanel = document.createElement('aside');
+    slidePanel.className = 'pnpt-slide-panel';
+    slidePanel.innerHTML = `
+      <div class="pnpt-slide-panel-header">
+        <strong>Feedback</strong>
+        <button type="button" class="pnpt-panel-close" aria-label="Close">×</button>
+      </div>
+      <input type="search" class="pnpt-panel-search" placeholder="Filter feedback…">
+      <ul class="pnpt-panel-list"></ul>
+    `;
+    slidePanel.querySelector('.pnpt-panel-close').addEventListener('click', () => toggleSlidePanel(false));
+    slidePanel.querySelector('.pnpt-panel-search').addEventListener('input', (e) => {
+      panelFilter = e.target.value;
+      renderPanelList(pinRecords);
+    });
+    document.body.appendChild(slidePanel);
+  }
+
+  function createToolbar() {
+    const bar = document.createElement('div');
+    bar.className = 'pnpt-toolbar';
+
     toggleBtn = document.createElement('button');
     toggleBtn.className = 'pnpt-toggle-btn';
     toggleBtn.textContent = 'Pinpoint';
     toggleBtn.type = 'button';
-    toggleBtn.title = 'Toggle Pinpoint feedback mode';
+    toggleBtn.title = 'Capture feedback';
     toggleBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       setFeedbackMode(!feedbackMode);
     });
-    document.body.appendChild(toggleBtn);
+
+    const panelBtn = document.createElement('button');
+    panelBtn.className = 'pnpt-panel-toggle-btn';
+    panelBtn.type = 'button';
+    panelBtn.textContent = 'Feedback';
+    panelBtn.title = 'View all feedback';
+    panelBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleSlidePanel();
+    });
+
+    bar.appendChild(toggleBtn);
+    bar.appendChild(panelBtn);
+    document.body.appendChild(bar);
   }
 
   function createDashboardButton() {
@@ -1202,7 +1321,8 @@
     if (window.__pinpointInitialized) return;
     window.__pinpointInitialized = true;
 
-    createToggleButton();
+    createToolbar();
+    createSlidePanel();
     createDashboardButton();
     document.addEventListener('mouseover', onMouseOver, true);
     document.addEventListener('mouseout', onMouseOut, true);
@@ -1226,12 +1346,12 @@
 
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
-      if (changes.PINPOINT_MODE || changes.DASHBOARD_URL || changes.SUPABASE_URL || changes.SUPABASE_ANON_KEY) {
-        loadCredentials(() => fetchPins());
+      if (changes.PINPOINT_SESSION || changes.PINPOINT_ACTIVE_PROTOTYPE) {
+        loadState(() => fetchPins());
       }
     });
 
-    loadCredentials(() => fetchPins());
+    loadState(() => fetchPins());
   }
 
   if (document.readyState === 'loading') {

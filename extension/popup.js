@@ -1,33 +1,259 @@
-const urlInput = document.getElementById('supabase-url');
-const keyInput = document.getElementById('supabase-key');
-const dashboardInput = document.getElementById('dashboard-url');
-const modeSelect = document.getElementById('pinpoint-mode');
-const saveBtn = document.getElementById('save-btn');
-const savedMsg = document.getElementById('saved-msg');
+const screens = {
+  auth: document.getElementById('screen-auth'),
+  checkEmail: document.getElementById('screen-check-email'),
+  home: document.getElementById('screen-home'),
+  addProto: document.getElementById('screen-add-proto'),
+  detail: document.getElementById('screen-proto-detail'),
+  settings: document.getElementById('screen-settings'),
+};
 
-const DEFAULT_DASHBOARD_URL = 'https://pinpoint-nu-jade.vercel.app';
+let currentPrototype = null;
 
-chrome.storage.local.get(
-  ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'DASHBOARD_URL', 'PINPOINT_MODE'],
-  (data) => {
-    if (data.SUPABASE_URL) urlInput.value = data.SUPABASE_URL;
-    if (data.SUPABASE_ANON_KEY) keyInput.value = data.SUPABASE_ANON_KEY;
-    dashboardInput.value = data.DASHBOARD_URL || DEFAULT_DASHBOARD_URL;
-    modeSelect.value = data.PINPOINT_MODE === 'owner' ? 'owner' : 'reviewer';
+function showScreen(name) {
+  Object.values(screens).forEach((el) => el.classList.remove('active'));
+  screens[name].classList.add('active');
+}
+
+function bg(message) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(message, (res) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      resolve(res || { ok: false, error: 'No response' });
+    });
+  });
+}
+
+function parseHashTokens() {
+  const hash = window.location.hash.replace(/^#/, '');
+  if (!hash) return null;
+  const params = new URLSearchParams(hash);
+  const access = params.get('access_token');
+  const refresh = params.get('refresh_token');
+  if (!access) return null;
+  return {
+    access_token: access,
+    refresh_token: refresh,
+    expires_in: parseInt(params.get('expires_in') || '3600', 10),
+  };
+}
+
+async function tryRestoreSession() {
+  const tokens = parseHashTokens();
+  if (tokens) {
+    await bg({
+      type: 'SET_SESSION_TOKENS',
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_in: tokens.expires_in,
+    });
+    history.replaceState(null, '', 'popup.html');
   }
-);
 
-saveBtn.addEventListener('click', () => {
-  chrome.storage.local.set(
-    {
-      SUPABASE_URL: urlInput.value.trim(),
-      SUPABASE_ANON_KEY: keyInput.value.trim(),
-      DASHBOARD_URL: dashboardInput.value.trim() || DEFAULT_DASHBOARD_URL,
-      PINPOINT_MODE: modeSelect.value,
-    },
-    () => {
-      savedMsg.classList.add('visible');
-      setTimeout(() => savedMsg.classList.remove('visible'), 2000);
+  const params = new URLSearchParams(window.location.search);
+  const invite = params.get('invite');
+  if (invite) {
+    const res = await bg({ type: 'ACCEPT_INVITE', token: invite });
+    if (res.ok) {
+      await bg({ type: 'SET_ACTIVE_PROTOTYPE', prototype: res.data });
+      history.replaceState(null, '', 'popup.html');
+      showToast('Invite accepted');
     }
-  );
+  }
+
+  const sessionRes = await bg({ type: 'GET_SESSION' });
+  if (sessionRes.ok && sessionRes.data?.session) {
+    await renderHome(sessionRes.data.session);
+    return true;
+  }
+  showScreen('auth');
+  return false;
+}
+
+function showToast(msg) {
+  const sub = document.getElementById('header-subtitle');
+  const prev = sub.textContent;
+  sub.textContent = msg;
+  setTimeout(() => { sub.textContent = prev; }, 2500);
+}
+
+async function renderHome(session) {
+  const email = session.user?.email || 'there';
+  document.getElementById('home-greeting').textContent = `Signed in as ${email}`;
+  showScreen('home');
+
+  const listEl = document.getElementById('proto-list');
+  listEl.innerHTML = '<li class="pnpt-msg">Loading…</li>';
+
+  const res = await bg({ type: 'LIST_PROTOTYPES' });
+  if (!res.ok) {
+    listEl.innerHTML = `<li class="pnpt-error">${res.error}</li>`;
+    return;
+  }
+
+  const protos = res.data || [];
+  if (!protos.length) {
+    listEl.innerHTML = '<li class="pnpt-msg">No prototypes yet. Add one to get started.</li>';
+    return;
+  }
+
+  listEl.innerHTML = '';
+  protos.forEach((p) => {
+    const li = document.createElement('li');
+    li.className = 'pnpt-proto-item';
+    li.innerHTML = `<strong>${escapeHtml(p.name)}</strong><span>${escapeHtml(p.url_pattern)}</span>`;
+    li.addEventListener('click', () => openPrototypeDetail(p));
+    listEl.appendChild(li);
+  });
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+async function openPrototypeDetail(proto) {
+  currentPrototype = proto;
+  await bg({ type: 'SET_ACTIVE_PROTOTYPE', prototype: proto });
+  document.getElementById('detail-name').textContent = proto.name;
+  document.getElementById('detail-url').textContent = proto.url_pattern;
+  document.getElementById('invite-link-box').hidden = true;
+  showScreen('detail');
+}
+
+document.getElementById('auth-send-btn').addEventListener('click', async () => {
+  const email = document.getElementById('auth-email').value.trim();
+  const errEl = document.getElementById('auth-error');
+  errEl.hidden = true;
+  if (!email) {
+    errEl.textContent = 'Enter your email';
+    errEl.hidden = false;
+    return;
+  }
+  const res = await bg({ type: 'SIGN_IN_OTP', email });
+  if (!res.ok) {
+    errEl.textContent = res.error;
+    errEl.hidden = false;
+    return;
+  }
+  showScreen('checkEmail');
 });
+
+document.getElementById('auth-back-btn').addEventListener('click', () => showScreen('auth'));
+
+document.getElementById('sign-out-btn').addEventListener('click', async () => {
+  await bg({ type: 'SIGN_OUT' });
+  showScreen('auth');
+});
+
+document.getElementById('add-proto-btn').addEventListener('click', () => {
+  document.getElementById('proto-name').value = '';
+  document.getElementById('proto-url').value = '';
+  document.getElementById('add-error').hidden = true;
+  showScreen('addProto');
+});
+
+document.getElementById('add-back-btn').addEventListener('click', () => showScreen('home'));
+
+document.getElementById('create-proto-btn').addEventListener('click', async () => {
+  const name = document.getElementById('proto-name').value.trim();
+  const url = document.getElementById('proto-url').value.trim();
+  const errEl = document.getElementById('add-error');
+  errEl.hidden = true;
+  if (!url) {
+    errEl.textContent = 'Paste a prototype URL';
+    errEl.hidden = false;
+    return;
+  }
+  const res = await bg({ type: 'CREATE_PROTOTYPE', name, url });
+  if (!res.ok) {
+    errEl.textContent = res.error;
+    errEl.hidden = false;
+    return;
+  }
+  await openPrototypeDetail(res.data);
+});
+
+document.getElementById('detail-back-btn').addEventListener('click', async () => {
+  const sessionRes = await bg({ type: 'GET_SESSION' });
+  if (sessionRes.ok) await renderHome(sessionRes.data.session);
+});
+
+document.getElementById('open-proto-btn').addEventListener('click', () => {
+  if (currentPrototype?.url_pattern) {
+    chrome.tabs.create({ url: currentPrototype.url_pattern });
+  }
+});
+
+document.getElementById('invite-btn').addEventListener('click', async () => {
+  const email = document.getElementById('invite-email').value.trim();
+  if (!email || !currentPrototype) return;
+  const res = await bg({
+    type: 'INVITE_COLLABORATOR',
+    prototypeId: currentPrototype.id,
+    email,
+    role: 'collaborator',
+  });
+  if (!res.ok) {
+    showToast(res.error);
+    return;
+  }
+  const configRes = await bg({ type: 'GET_CONFIG' });
+  const dashboard = configRes.data?.dashboardUrl || '';
+  const link = `${dashboard}/invite/${res.data.invite_token}`;
+  const box = document.getElementById('invite-link-box');
+  box.textContent = link;
+  box.hidden = false;
+  try {
+    await navigator.clipboard.writeText(link);
+    showToast('Invite link copied');
+  } catch {
+    showToast('Invite link ready');
+  }
+});
+
+document.getElementById('detail-settings-btn').addEventListener('click', () => {
+  if (!currentPrototype) return;
+  document.getElementById('toggle-team-feedback').checked = currentPrototype.show_team_feedback !== false;
+  document.getElementById('toggle-upvotes').checked = currentPrototype.allow_upvotes !== false;
+  showScreen('settings');
+});
+
+document.getElementById('settings-back-btn').addEventListener('click', () => showScreen('detail'));
+
+document.getElementById('save-settings-btn').addEventListener('click', async () => {
+  if (!currentPrototype) return;
+  const body = {
+    show_team_feedback: document.getElementById('toggle-team-feedback').checked,
+    allow_upvotes: document.getElementById('toggle-upvotes').checked,
+  };
+  const res = await bg({
+    type: 'REST',
+    method: 'PATCH',
+    path: `prototypes?id=eq.${currentPrototype.id}`,
+    body,
+    prefer: 'return=representation',
+  });
+  if (res.ok) {
+    currentPrototype = Array.isArray(res.data) ? res.data[0] : { ...currentPrototype, ...body };
+    await bg({ type: 'SET_ACTIVE_PROTOTYPE', prototype: currentPrototype });
+    showToast('Settings saved');
+    showScreen('detail');
+  } else {
+    showToast(res.error || 'Save failed');
+  }
+});
+
+// Poll for session after magic link (user may complete auth in browser tab)
+setInterval(async () => {
+  if (!screens.checkEmail.classList.contains('active')) return;
+  const res = await bg({ type: 'GET_SESSION' });
+  if (res.ok && res.data?.session) {
+    await renderHome(res.data.session);
+  }
+}, 2000);
+
+tryRestoreSession();
