@@ -23,8 +23,10 @@ Pinpoint is a visual feedback tool for web prototypes. Reviewers use a Chrome ex
 
 1. Open Chrome → `chrome://extensions` → enable **Developer mode**.
 2. Click **Load unpacked** and select the `extension/` folder.
-3. Click the Pinpoint toolbar icon → enter your Supabase URL and anon key → **Save**.
-4. Open any prototype URL → click the **Pinpoint** floating button → click an element → submit feedback.
+3. Click the Pinpoint toolbar icon → enter your Supabase URL, anon key, optional dashboard URL, and mode (**Reviewer** or **Owner**) → **Save**.
+4. Open any prototype URL → click the **Pinpoint** floating button → click an element → draw on the screenshot if needed → submit feedback.
+
+**Reviewer mode** loads pins for the current page URL only. **Owner mode** loads all feedback for the prototype (by `prototype_id`), shows an “All feedback” panel, and lists pins on elements that exist on the current page.
 
 ## Dashboard setup (local)
 
@@ -78,6 +80,21 @@ pinpoint/
 └── README.md
 ```
 
-## Security note
+## Extension credentials (MVP)
 
-This MVP uses the Supabase **anon** key with RLS policies allowing anonymous read/write. Add Supabase Auth before production use with sensitive data.
+The popup stores the Supabase **anon** key in `chrome.storage.local` on each machine. There is no login yet — distribute the extension unpacked or via your team’s Chrome policy, and paste project keys once per reviewer.
+
+- **Reviewer**: submit feedback; see pins for the current full page URL (`window.location.href`).
+- **Owner**: see all feedback for the prototype (`prototype_id`); use **Open dashboard** on the page to triage.
+
+Do not commit real keys to the repo. Use dashboard `.env` and the extension popup only.
+
+## Security & auth roadmap (Phase 2)
+
+This MVP uses the Supabase **anon** key with RLS policies allowing anonymous read/write. Before production or sensitive prototypes:
+
+1. **Supabase Auth** — reviewers sign in (magic link or shared project invite); the extension stores a session JWT instead of a pasted anon key.
+2. **RLS by membership** — `select`/`insert`/`update` on `feedback` scoped to rows where `prototype_id` is in the user’s project; storage uploads restricted similarly.
+3. **Owner vs reviewer** — map roles to JWT claims or a `project_members` table instead of a client-side mode toggle.
+
+Until Phase 2, treat the anon key as a team secret, prefer **Owner** mode only for prototype owners, and rotate keys if the extension package leaks.

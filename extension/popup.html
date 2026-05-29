@@ -5,7 +5,7 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      width: 280px;
+      width: 300px;
       padding: 16px;
       font-family: system-ui, sans-serif;
       font-size: 13px;
@@ -26,7 +26,7 @@
       margin-top: 10px;
     }
     label:first-of-type { margin-top: 0; }
-    input {
+    input, select {
       width: 100%;
       border: 1px solid #d1d5db;
       border-radius: 6px;
@@ -34,7 +34,7 @@
       font-size: 12px;
       font-family: inherit;
     }
-    input:focus { outline: none; border-color: #6366f1; }
+    input:focus, select:focus { outline: none; border-color: #6366f1; }
     button {
       width: 100%;
       margin-top: 14px;
@@ -48,6 +48,12 @@
       cursor: pointer;
     }
     button:hover { background: #4f46e5; }
+    .hint {
+      font-size: 11px;
+      color: #6b7280;
+      margin-top: 4px;
+      line-height: 1.4;
+    }
     .saved {
       display: none;
       margin-top: 10px;
@@ -65,6 +71,15 @@
   <input type="url" id="supabase-url" placeholder="https://xxx.supabase.co">
   <label for="supabase-key">Supabase Anon Key</label>
   <input type="password" id="supabase-key" placeholder="eyJ...">
+  <label for="dashboard-url">Dashboard URL (optional)</label>
+  <input type="url" id="dashboard-url" placeholder="https://pinpoint-nu-jade.vercel.app">
+  <p class="hint">Used by the “Open dashboard” button on prototype pages.</p>
+  <label for="pinpoint-mode">Mode</label>
+  <select id="pinpoint-mode">
+    <option value="reviewer">Reviewer — pins for this page only</option>
+    <option value="owner">Owner — all pins for this prototype</option>
+  </select>
+  <p class="hint">Owner mode shows feedback from every page in the prototype and an “All feedback” panel.</p>
   <button id="save-btn">Save</button>
   <div class="saved" id="saved-msg">✓ Saved</div>
   <script src="popup.js"></script>

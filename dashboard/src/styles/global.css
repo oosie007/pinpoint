@@ -236,6 +236,21 @@ body {
   margin-bottom: 4px;
 }
 
+.card-page-url {
+  display: block;
+  font-size: 12px;
+  color: #818cf8;
+  text-decoration: none;
+  margin-bottom: 8px;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.card-page-url:hover {
+  text-decoration: underline;
+  color: #a5b4fc;
+}
+
 .card-comment {
   color: #d1d5db;
   margin-bottom: 12px;

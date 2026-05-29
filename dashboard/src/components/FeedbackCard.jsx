@@ -59,6 +59,17 @@ export default function FeedbackCard({ item, pinNumber, onUpdate }) {
       </div>
 
       <div className="card-user">{item.user_name}</div>
+      {item.page_url && (
+        <a
+          className="card-page-url"
+          href={item.page_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={item.page_url}
+        >
+          {item.page_url}
+        </a>
+      )}
       <p className="card-comment">{item.comment}</p>
 
       {(item.element_text || item.element_selector) && (
